@@ -1,77 +1,23 @@
 import socket
 import threading
 import os
-import random
-import hashlib
 import sys
 import json
 
-# ---------- RSA utilities (Miller-Rabin, modinv etc.) ----------
-def is_probable_prime(n, k=8):
-    if n < 2:
-        return False
-    small_primes = [2,3,5,7,11,13,17,19,23,29]
-    for p in small_primes:
-        if n % p == 0:
-            return n == p
-    r = 0
-    d = n - 1
-    while d % 2 == 0:
-        d //= 2
-        r += 1
-    for _ in range(k):
-        a = random.randrange(2, n - 1)
-        x = pow(a, d, n)
-        if x == 1 or x == n - 1:
-            continue
-        for _ in range(r - 1):
-            x = pow(x, 2, n)
-            if x == n - 1:
-                break
-        else:
-            return False
-    return True
-
-def gen_prime(bits):
-    while True:
-        p = random.getrandbits(bits) | (1 << (bits - 1)) | 1
-        if is_probable_prime(p):
-            return p
-
-def egcd(a, b):
-    if b == 0:
-        return (a, 1, 0)
-    g, x1, y1 = egcd(b, a % b)
-    return (g, y1, x1 - (a // b) * y1)
-
-def modinv(a, m):
-    g, x, y = egcd(a, m)
-    if g != 1:
-        raise Exception('Modular inverse does not exist')
-    return x % m
-
-def gen_rsa_keypair(bits=1024):
-    p = gen_prime(bits // 2)
-    q = gen_prime(bits // 2)
-    while q == p:
-        q = gen_prime(bits // 2)
-    n = p * q
-    phi = (p - 1) * (q - 1)
-    e = 65537
-    if phi % e == 0:
-        e = 3
-        while egcd(e, phi)[0] != 1:
-            e += 2
-    d = modinv(e, phi)
-    return (n, e, d)
+from cryptosystem import (
+    gen_rsa_keypair,
+    rsa_encrypt_int,
+    sign_bytes_with_rsa,
+    int_to_hex_upper
+)
 
 # ---------- Authority bootstrap ----------
-AUTH_BITS = 1024
-print("Generating Authority RSA keypair (this may take a second)...")
+AUTH_BITS = 2048
+print("Generating Authority RSA keypair (this may take a while)...")
 auth_n, auth_e, auth_d = gen_rsa_keypair(AUTH_BITS)
 print("Authority RSA keypair ready.")
-AUTH_PUB_E_HEX = hex(auth_e)[2:].upper()
-AUTH_PUB_N_HEX = hex(auth_n)[2:].upper()
+AUTH_PUB_E_HEX = int_to_hex_upper(auth_e)
+AUTH_PUB_N_HEX = int_to_hex_upper(auth_n)
 
 GROUP_KEY_BYTES = os.urandom(8)
 GROUP_KEY_HEX = GROUP_KEY_BYTES.hex().upper()
@@ -111,20 +57,21 @@ def handle_client(conn, addr):
                 conn.send(b"ERROR::BAD_FORMAT")
                 return
             _, username, e_hex, n_hex = parts
-            client_e = int(e_hex, 16)
-            client_n = int(n_hex, 16)
+            try:
+                client_e = int(e_hex, 16)
+                client_n = int(n_hex, 16)
+            except Exception:
+                conn.send(b"ERROR::BAD_PUBKEY")
+                return
 
             save_registration(username, e_hex, n_hex)
 
             m = int(GROUP_KEY_HEX, 16)
-            c = pow(m, client_e, client_n)
-            c_hex = hex(c)[2:].upper()
+            c_int = rsa_encrypt_int(m, client_e, client_n)
+            c_hex = int_to_hex_upper(c_int)
 
             to_sign = (username + GROUP_KEY_HEX).encode('utf-8')
-            h = hashlib.sha256(to_sign).hexdigest()
-            h_int = int(h, 16)
-            sig_int = pow(h_int, auth_d, auth_n)
-            sig_hex = hex(sig_int)[2:].upper()
+            sig_hex = sign_bytes_with_rsa(auth_d, auth_n, to_sign)
 
             resp = (
                 "KEY::" + c_hex +

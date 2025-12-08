@@ -6,6 +6,8 @@ import json
 import os
 import datetime
 
+from cryptosystem import verify_bytes_with_rsa
+
 REG_FILE = "registrations.json"
 LOG_FILE = "server_logMessage.txt"
 
@@ -63,15 +65,8 @@ def verify_signature(username, ciphertext_hex, sig_hex):
     try:
         e = int(info['e'], 16)
         n = int(info['n'], 16)
-        sig_int = int(sig_hex, 16)
-        import hashlib
-        h = hashlib.sha256(ciphertext_hex.encode('utf-8')).hexdigest()
-        h_int = int(h, 16)
-        verification = pow(sig_int, e, n)
-        if verification == (h_int % n):
-            return True, "VERIFIED"
-        else:
-            return False, "FAILED"
+        ok = verify_bytes_with_rsa(e, n, ciphertext_hex.encode('utf-8'), sig_hex)
+        return (True, "VERIFIED") if ok else (False, "FAILED")
     except Exception:
         return False, "ERROR"
 

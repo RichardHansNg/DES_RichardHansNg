@@ -3,70 +3,15 @@ import threading
 import datetime
 import sys
 from io import StringIO
-import hashlib
-import random
 import json
 
 from Original import encrypt_message, decrypt_message
-
-# ---------------- RSA utilities (from scratch) ---------------- #
-def is_probable_prime(n, k=8):
-    if n < 2:
-        return False
-    small_primes = [2,3,5,7,11,13,17,19,23,29]
-    for p in small_primes:
-        if n % p == 0:
-            return n == p
-    r = 0
-    d = n - 1
-    while d % 2 == 0:
-        d //= 2
-        r += 1
-    for _ in range(k):
-        a = random.randrange(2, n - 1)
-        x = pow(a, d, n)
-        if x == 1 or x == n - 1:
-            continue
-        for _ in range(r - 1):
-            x = pow(x, 2, n)
-            if x == n - 1:
-                break
-        else:
-            return False
-    return True
-
-def gen_prime(bits):
-    while True:
-        p = random.getrandbits(bits) | (1 << (bits - 1)) | 1
-        if is_probable_prime(p):
-            return p
-
-def egcd(a, b):
-    if b == 0:
-        return (a, 1, 0)
-    g, x1, y1 = egcd(b, a % b)
-    return (g, y1, x1 - (a // b) * y1)
-
-def modinv(a, m):
-    g, x, y = egcd(a, m)
-    if g != 1:
-        raise Exception('Modular inverse does not exist')
-    return x % m
-
-def gen_rsa_keypair(bits=1024):
-    p = gen_prime(bits // 2)
-    q = gen_prime(bits // 2)
-    while q == p:
-        q = gen_prime(bits // 2)
-    n = p * q
-    phi = (p - 1) * (q - 1)
-    e = 65537
-    if phi % e == 0:
-        e = 3
-        while egcd(e, phi)[0] != 1:
-            e += 2
-    d = modinv(e, phi)
-    return (n, e, d)
+from cryptosystem import (
+    gen_rsa_keypair,
+    rsa_decrypt_int,
+    sign_bytes_with_rsa,
+    verify_bytes_with_rsa
+)
 
 # ---------------- Framing helpers ---------------- #
 def send_framed(sock, text):
@@ -182,7 +127,7 @@ def main():
     username = input("Enter username: ").strip()
 
     print("Generating client's RSA keypair (this may take a second)...")
-    client_n, client_e, client_d = gen_rsa_keypair(1024)
+    client_n, client_e, client_d = gen_rsa_keypair(2048)
     client_e_hex = hex(client_e)[2:].upper()
     client_n_hex = hex(client_n)[2:].upper()
     print("Client RSA keypair ready.")
@@ -203,7 +148,7 @@ def main():
     group_len = mapping.get("group_len", 16)
 
     c_int = int(enc_hex, 16)
-    m_int = pow(c_int, client_d, client_n)
+    m_int = rsa_decrypt_int(c_int, client_d, client_n)
     group_key_hex = format(m_int, 'x').upper().rjust(group_len, '0')
     print("Received group DES key (hex):", group_key_hex)
 
@@ -213,12 +158,8 @@ def main():
 
     auth_e = int(auth_e_hex, 16)
     auth_n_int = int(auth_n, 16)
-    sig_int = int(sig_hex, 16)
     to_verify = (username + group_key_hex).encode('utf-8')
-    h = hashlib.sha256(to_verify).hexdigest()
-    h_int = int(h, 16)
-    verification = pow(sig_int, auth_e, auth_n_int)
-    if verification != (h_int % auth_n_int):
+    if not verify_bytes_with_rsa(auth_e, auth_n_int, to_verify, sig_hex):
         print("Signature verification FAILED. Aborting.")
         return
     print("Signature verified. Authority vouches for the group key.")
@@ -252,10 +193,7 @@ def main():
             with open('logProcedure.txt', 'a') as f:
                 f.write(log.getvalue() + '\n')
 
-            h = hashlib.sha256(ciphertext.encode('utf-8')).hexdigest()
-            h_int = int(h, 16)
-            sig_int = pow(h_int, client_d, client_n)
-            sig_hex = hex(sig_int)[2:].upper()
+            sig_hex = sign_bytes_with_rsa(client_d, client_n, ciphertext.encode('utf-8'))
 
             payload = {
                 "username": username,
